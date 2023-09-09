@@ -486,10 +486,13 @@ static int pcm_device_table[AUDIO_USECASE_MAX][2] = {
     [USECASE_AUDIO_PLAYBACK_PHONE] = {PHONE_PCM_DEVICE,
                                       PHONE_PCM_DEVICE},
     [USECASE_AUDIO_FM_TUNER_EXT] = {-1, -1},
+    [USECASE_AUDIO_ULTRASOUND_RX] = {ULTRASOUND_PCM_DEVICE, -1},
+    [USECASE_AUDIO_ULTRASOUND_TX] = {-1, ULTRASOUND_PCM_DEVICE},
+
 };
 
 /* Array to store sound devices */
-static const char * const device_table[SND_DEVICE_MAX] = {
+static const char * device_table[SND_DEVICE_MAX] = {
     [SND_DEVICE_NONE] = "none",
     /* Playback sound devices */
     [SND_DEVICE_OUT_HANDSET] = "handset",
@@ -590,6 +593,7 @@ static const char * const device_table[SND_DEVICE_MAX] = {
     [SND_DEVICE_OUT_BUS_SYS] = "bus-speaker",
     [SND_DEVICE_OUT_BUS_NAV] = "bus-speaker",
     [SND_DEVICE_OUT_BUS_PHN] = "bus-speaker",
+    [SND_DEVICE_OUT_ULTRASOUND_HANDSET] = "ultrasound-handset",
 
     /* Capture sound devices */
     [SND_DEVICE_IN_HANDSET_MIC] = "handset-mic",
@@ -728,6 +732,7 @@ static const char * const device_table[SND_DEVICE_MAX] = {
     [SND_DEVICE_IN_HANDSET_QMIC_AND_EC_REF_LOOPBACK] = "handset-qmic-and-ec-ref-loopback",
     [SND_DEVICE_IN_HANDSET_6MIC_AND_EC_REF_LOOPBACK] = "handset-6mic-and-ec-ref-loopback",
     [SND_DEVICE_IN_HANDSET_8MIC_AND_EC_REF_LOOPBACK] = "handset-8mic-and-ec-ref-loopback",
+    [SND_DEVICE_IN_ULTRASOUND_MIC] = "ultrasound-mic",
 };
 
 // Platform specific backend bit width table
@@ -1266,6 +1271,7 @@ static struct name_to_index usecase_name_index[AUDIO_USECASE_MAX] = {
     {TO_NAME_INDEX(USECASE_VOWLAN_CALL)},
     {TO_NAME_INDEX(USECASE_VOICEMMODE1_CALL)},
     {TO_NAME_INDEX(USECASE_VOICEMMODE2_CALL)},
+    {TO_NAME_INDEX(USECASE_COMPRESS_VOIP_CALL)},
     {TO_NAME_INDEX(USECASE_INCALL_REC_UPLINK)},
     {TO_NAME_INDEX(USECASE_INCALL_REC_DOWNLINK)},
     {TO_NAME_INDEX(USECASE_INCALL_REC_UPLINK_AND_DOWNLINK)},
@@ -1291,6 +1297,8 @@ static struct name_to_index usecase_name_index[AUDIO_USECASE_MAX] = {
     {TO_NAME_INDEX(USECASE_AUDIO_PLAYBACK_SYS_NOTIFICATION)},
     {TO_NAME_INDEX(USECASE_AUDIO_PLAYBACK_NAV_GUIDANCE)},
     {TO_NAME_INDEX(USECASE_AUDIO_PLAYBACK_PHONE)},
+    {TO_NAME_INDEX(USECASE_AUDIO_ULTRASOUND_RX)},
+    {TO_NAME_INDEX(USECASE_AUDIO_ULTRASOUND_TX)},
 };
 
 static const struct name_to_index usecase_type_index[USECASE_TYPE_MAX] = {
@@ -1758,7 +1766,11 @@ bool platform_send_gain_dep_cal(void *platform, int level) {
             usecase = node_to_item(node, struct audio_usecase, list);
 
             if (usecase != NULL && usecase->stream.out &&
-                                   usecase->type == PCM_PLAYBACK) {
+                                   usecase->type == PCM_PLAYBACK
+#ifdef ELLIPTIC_ULTRASOUND_ENABLED
+                && usecase->id != USECASE_AUDIO_ULTRASOUND_RX
+#endif
+                ) {
                 int new_snd_device[2] = {0};
                 int i, num_devices = 1;
 
@@ -2254,6 +2266,7 @@ static void set_platform_defaults(struct platform_data * my_data)
     hw_interface_table[SND_DEVICE_OUT_BUS_SYS] = strdup("TERT_TDM_RX_0");
     hw_interface_table[SND_DEVICE_OUT_BUS_NAV] = strdup("TERT_TDM_RX_1");
     hw_interface_table[SND_DEVICE_OUT_BUS_PHN] = strdup("TERT_TDM_RX_2");
+    hw_interface_table[SND_DEVICE_OUT_ULTRASOUND_HANDSET] = strdup("SLIMBUS_0_RX");
     hw_interface_table[SND_DEVICE_IN_HANDSET_MIC] = strdup("SLIMBUS_0_TX");
     hw_interface_table[SND_DEVICE_IN_HANDSET_MIC_SB] = strdup("SLIMBUS_0_TX");
     hw_interface_table[SND_DEVICE_IN_HANDSET_MIC_EXTERNAL] = strdup("SLIMBUS_0_TX");
@@ -2381,6 +2394,8 @@ static void set_platform_defaults(struct platform_data * my_data)
     hw_interface_table[SND_DEVICE_IN_CAMCORDER_SELFIE_PORTRAIT] = strdup("SLIMBUS_0_TX");
     hw_interface_table[SND_DEVICE_IN_VOICE_HEARING_AID] = strdup("SLIMBUS_0_TX");
     hw_interface_table[SND_DEVICE_IN_BUS] = strdup("TERT_TDM_TX_0");
+    hw_interface_table[SND_DEVICE_IN_ULTRASOUND_MIC] = strdup("SLIMBUS_0_TX");
+
     my_data->max_mic_count = PLATFORM_DEFAULT_MIC_COUNT;
 
      /*remove ALAC & APE from DSP decoder list based on software decoder availability*/
@@ -4175,12 +4190,12 @@ bool platform_check_backends_match(snd_device_t snd_device1, snd_device_t snd_de
                 platform_get_snd_device_name(snd_device1),
                 platform_get_snd_device_name(snd_device2));
 
-    if ((snd_device1 < SND_DEVICE_MIN) || (snd_device1 >= SND_DEVICE_OUT_END)) {
+    if ((snd_device1 < SND_DEVICE_MIN) || (snd_device1 >= SND_DEVICE_MAX)) {
         ALOGE("%s: Invalid snd_device = %s", __func__,
                 platform_get_snd_device_name(snd_device1));
         return false;
     }
-    if ((snd_device2 < SND_DEVICE_MIN) || (snd_device2 >= SND_DEVICE_OUT_END)) {
+    if ((snd_device2 < SND_DEVICE_MIN) || (snd_device2 >= SND_DEVICE_MAX)) {
         ALOGE("%s: Invalid snd_device = %s", __func__,
                 platform_get_snd_device_name(snd_device2));
         return false;
@@ -6607,37 +6622,52 @@ snd_device_t platform_get_input_snd_device(void *platform,
     } else if (source == AUDIO_SOURCE_CAMCORDER) {
         if (in_device & AUDIO_DEVICE_IN_BUILTIN_MIC ||
             in_device & AUDIO_DEVICE_IN_BACK_MIC) {
-            switch (adev->camera_orientation) {
-            case CAMERA_BACK_LANDSCAPE:
-                snd_device = SND_DEVICE_IN_CAMCORDER_LANDSCAPE;
-                break;
-            case CAMERA_BACK_INVERT_LANDSCAPE:
-                snd_device = SND_DEVICE_IN_CAMCORDER_INVERT_LANDSCAPE;
-                break;
-            case CAMERA_BACK_PORTRAIT:
-                snd_device = SND_DEVICE_IN_CAMCORDER_PORTRAIT;
-                break;
-            case CAMERA_FRONT_LANDSCAPE:
-                snd_device = SND_DEVICE_IN_CAMCORDER_SELFIE_LANDSCAPE;
-                break;
-            case CAMERA_FRONT_INVERT_LANDSCAPE:
-                snd_device = SND_DEVICE_IN_CAMCORDER_SELFIE_INVERT_LANDSCAPE;
-                break;
-            case CAMERA_FRONT_PORTRAIT:
-                snd_device = SND_DEVICE_IN_CAMCORDER_SELFIE_PORTRAIT;
-                break;
-            default:
-                ALOGW("%s: invalid camera orientation %08x", __func__, adev->camera_orientation);
-                snd_device = SND_DEVICE_IN_CAMCORDER_LANDSCAPE;
-                break;
-            }
+
             if (str_bitwidth == 16) {
                 if ((my_data->fluence_type & FLUENCE_DUAL_MIC) &&
                     (my_data->source_mic_type & SOURCE_DUAL_MIC) &&
                     (channel_count == 2))
-                    snd_device = SND_DEVICE_IN_HANDSET_DMIC_STEREO;
+                    switch (adev->camera_orientation) {
+                        case CAMERA_BACK_LANDSCAPE:
+                        case CAMERA_FRONT_INVERT_LANDSCAPE:
+                            snd_device = SND_DEVICE_IN_SPEAKER_DMIC_STEREO;
+                            break;
+                        case CAMERA_BACK_INVERT_LANDSCAPE:
+                        case CAMERA_BACK_PORTRAIT:
+                        case CAMERA_FRONT_LANDSCAPE:
+                        case CAMERA_FRONT_PORTRAIT:
+                            snd_device = SND_DEVICE_IN_HANDSET_DMIC_STEREO;
+                            break;
+                        default:
+                            ALOGW("%s: invalid camera orientation %08x", __func__, adev->camera_orientation);
+                            snd_device = SND_DEVICE_IN_HANDSET_DMIC_STEREO;
+                            break;
+                    }
                 else
-                    snd_device = SND_DEVICE_IN_CAMCORDER_MIC;
+                    switch (adev->camera_orientation) {
+                        case CAMERA_BACK_LANDSCAPE:
+                            snd_device = SND_DEVICE_IN_CAMCORDER_LANDSCAPE;
+                            break;
+                        case CAMERA_BACK_INVERT_LANDSCAPE:
+                            snd_device = SND_DEVICE_IN_CAMCORDER_INVERT_LANDSCAPE;
+                            break;
+                        case CAMERA_BACK_PORTRAIT:
+                            snd_device = SND_DEVICE_IN_CAMCORDER_PORTRAIT;
+                            break;
+                        case CAMERA_FRONT_LANDSCAPE:
+                            snd_device = SND_DEVICE_IN_CAMCORDER_SELFIE_LANDSCAPE;
+                            break;
+                        case CAMERA_FRONT_INVERT_LANDSCAPE:
+                            snd_device = SND_DEVICE_IN_CAMCORDER_SELFIE_INVERT_LANDSCAPE;
+                            break;
+                        case CAMERA_FRONT_PORTRAIT:
+                            snd_device = SND_DEVICE_IN_CAMCORDER_SELFIE_PORTRAIT;
+                            break;
+                        default:
+                            ALOGW("%s: invalid camera orientation %08x", __func__, adev->camera_orientation);
+                            snd_device = SND_DEVICE_IN_CAMCORDER_LANDSCAPE;
+                            break;
+                    }
             }
             /*
              * for other bit widths
@@ -10361,6 +10391,21 @@ done:
     return ret;
 }
 
+int platform_set_snd_device_name(snd_device_t device, const char *name)
+{
+    int ret = 0;
+
+    if ((device < SND_DEVICE_MIN) || (device >= SND_DEVICE_MAX)) {
+        ALOGE("%s:: Invalid snd_device = %d", __func__, device);
+        ret = -EINVAL;
+        goto done;
+    }
+
+    device_table[device] = strdup(name);
+done:
+    return ret;
+}
+
 int platform_set_sidetone(struct audio_device *adev,
                           snd_device_t out_snd_device,
                           bool enable,
@@ -10710,6 +10755,9 @@ int platform_set_swap_channels(struct audio_device *adev, bool swap_channels)
 
     list_for_each(node, &adev->usecase_list) {
         usecase = node_to_item(node, struct audio_usecase, list);
+#ifdef ELLIPTIC_ULTRASOUND_ENABLED
+        if (usecase->id != USECASE_AUDIO_ULTRASOUND_RX)
+#endif
         if (usecase->stream.out && usecase->type == PCM_PLAYBACK &&
                 usecase->stream.out->devices & AUDIO_DEVICE_OUT_SPEAKER) {
             /*
